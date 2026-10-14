@@ -133,7 +133,7 @@ def extract_size_table(html, api_key, model_name="gpt-4.1-mini"):
     text = html_size_text(html)
     if text:
         html_table, i, o = _llm([HTML_INTRO + RULES, text], api_key, model_name)
-        meta.update(html_chars=len(text), in_tok=i, out_tok=o)
+        meta.update(html_chars=len(text), html_text=text, in_tok=i, out_tok=o)
         if html_table and html_table.kind == "measurement":
             meta.update(source="html", sec=round(time.time() - t0, 1))
             return html_table, meta

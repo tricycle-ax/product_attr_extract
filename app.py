@@ -211,6 +211,14 @@ def main():
                             
                             # 3. 화면 갱신
                             st.rerun()
+
+                        # 상품 분석 없이 사이즈표만 추출
+                        if st.button("📏 사이즈표", key=f"btn_sizeonly_{item['prdNo']}", type="secondary", width="stretch"):
+                            st.session_state.selected_product = getProductInfo(item['prdNo'])
+                            st.session_state.ai_result = None
+                            st.session_state.is_analyzing = False
+                            st.session_state.size_request = item['prdNo']
+                            st.rerun()
                     
         # ----------------------------------------------
         # [중간] 분석 로딩 및 실행 영역
@@ -392,7 +400,8 @@ def main():
         st.divider()
         st.markdown("#### 📏 사이즈표")
         prd_no = row.iloc[0]['prdNo']
-        if st.button("📏 사이즈표 추출", key=f"btn_size_{prd_no}"):
+        # 카드의 "📏 사이즈표" 버튼으로 들어온 경우 자동 실행
+        if st.button("📏 사이즈표 추출", key=f"btn_size_{prd_no}") or str(st.session_state.pop("size_request", None)) == str(prd_no):
             with st.spinner(f"사이즈표 추출 중입니다 ({SIZE_MODEL})..."):
                 try:
                     table, meta = extract_size_table(row.iloc[0]['prdDesc'], st.secrets["OPENAI_API_KEY"], SIZE_MODEL)
@@ -420,11 +429,23 @@ def main():
                 st.warning(issue)
             if not size_res["issues"]:
                 st.success("검증 통과")
+            # 추출에 사용된 입력: 이미지 조각(모델이 표를 봤다고 답한 조각 강조) / HTML 텍스트
             slices = meta.get("slices") or []
-            shown = [slices[i][1] for i in (table.source_slices if table else []) if 0 <= i < len(slices)]
-            if shown:
-                with st.expander(f"🧩 사이즈표가 보인 이미지 조각 ({len(shown)}장)"):
-                    st.image(shown, width=300)
+            found_idx = [i for i in (table.source_slices if table and meta.get("source") == "image" else []) if 0 <= i < len(slices)]
+            if found_idx:
+                st.markdown("**🖼️ 사이즈표가 있던 이미지**")
+                st.image([slices[i][1] for i in found_idx], caption=[f"조각 {i}" for i in found_idx], width=400)
+            elif meta.get("source") == "html":
+                st.caption("HTML 표 텍스트에서 추출했습니다 (이미지 미사용).")
+            if slices:
+                urls = list(dict.fromkeys(u for u, _ in slices))
+                with st.expander(f"🧩 AI에 보낸 이미지 조각 전체 ({len(slices)}장 · 원본 이미지 {len(urls)}장)"):
+                    st.image([b for _, b in slices], width=180,
+                             caption=[f"조각 {i}" + (" ✅" if i in found_idx else "") for i in range(len(slices))])
+                    st.markdown("**원본 이미지**\n" + "\n".join(f"- [{u.rsplit('/', 1)[-1]}]({u})" for u in urls))
+            if meta.get("html_text"):
+                with st.expander(f"📄 AI에 보낸 HTML 텍스트 ({meta.get('html_chars')}자)"):
+                    st.code(meta["html_text"])
             with st.expander("사이즈표 JSON"):
                 st.json(table.model_dump() if table else {})
 
@@ -473,7 +494,7 @@ def main():
                 st.markdown(f"> {res.description}")
         else:
             # 아직 분석 결과가 없을 때
-            st.info("분석된 결과가 없습니다. 다시 시도해주세요.")
+            st.info("상품 분석 결과가 없습니다. 검색 결과에서 ✨ 분석 버튼을 누르면 분석합니다.")
 
 if __name__ == "__main__":
     main()
