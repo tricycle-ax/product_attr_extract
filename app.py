@@ -122,8 +122,12 @@ def main():
         # ES 검색 결과 가져오기
         es_response = getPrdListByKeyword(1, search_query)
         
-        # 실제 데이터 바인딩
-        hits = es_response['data']['result']['hits']['hits']
+        # 실제 데이터 바인딩 (API 실패 시 None → 빈 결과)
+        try:
+            hits = es_response['data']['result']['hits']['hits']
+        except (TypeError, KeyError):
+            hits = []
+            st.error("❌ 상품 검색에 실패했습니다. 잠시 후 다시 시도해주세요.")
         st.session_state.search_results = [process_es_hit_to_display(hit) for hit in hits]
         st.session_state.selected_product = None
         st.session_state.ai_result = None

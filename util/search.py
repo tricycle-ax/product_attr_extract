@@ -7,7 +7,7 @@ def getPrdListByKeyword(siteCd, keyword):
 
     domain = 'hapix.halfclub.com'
 
-    if siteCd == '2':
+    if str(siteCd) == '2':  # 호출부는 int 로 넘김
         domain = 'apix.boribori.co.kr'
 
     url = f"https://{domain}/searches/prdList/"

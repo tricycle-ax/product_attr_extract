@@ -1,6 +1,17 @@
+import json
 import streamlit as st
 from openai import OpenAI
 from ai import gpt, gemini, qwen, nova_lite
+from schema.product import ProductSchema
+
+
+def _to_product_schema(res):
+    """Nova 는 dict 또는 (코드펜스 포함) 문자열을 돌려줌 → 다른 모델과 같은 ProductSchema 로 통일"""
+    if res is None or isinstance(res, ProductSchema):
+        return res
+    if isinstance(res, str):
+        res = json.loads(res.strip().removeprefix("```json").removeprefix("```").removesuffix("```"))
+    return ProductSchema.model_validate(res)
 
 # ==========================================
 # [1] AI 통신 전담 함수 (핵심 변경 부분)
@@ -25,7 +36,8 @@ def call_ai_service(system_prompt, user_text, image_list, model_name):
     # 3. aws nova lite
     elif "aws" in model_name.lower():        
         token = st.secrets["AWS_BEARER_TOKEN_BEDROCK"]
-        return nova_lite._call_nova_lite_api(system_prompt, user_text, image_list, model_name, token)
+        schema = json.dumps(ProductSchema.model_json_schema(), ensure_ascii=False)
+        return _to_product_schema(nova_lite._call_nova_lite_api(system_prompt, user_text, image_list, model_name, token, schema))
     
     # 3. 기본 OpenAI (GPT-4o 등)
     else:

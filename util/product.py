@@ -248,21 +248,15 @@ def analyze_product_with_full_context(html_content, model_name="gemini-2.5-flash
                 else:
                     print(f"❌ 이미지 변환 실패 (건너뜀): {img_url}")
 
-    # --- 4. OpenAI API 호출 ---
-    try:
-        response = call_ai_service(
-            system_prompt=system_prompt,
-            user_text=user_content,
-            image_list=ai_image_inputs,
-            model_name=model_name
-        )
-      
-        # ★ [핵심 수정] 무조건 3개의 값을 반환해야 합니다!
-        if response is None:
-            return None, [], [], [] # (1. 결과, 2. 원본 URL들, 3. 크롭 이미지들, 4. 상세설명에서 추출한 text)
+    # --- 4. AI 호출 --- (예외는 app.py 의 except 에서 화면에 표시)
+    response = call_ai_service(
+        system_prompt=system_prompt,
+        user_text=user_content,
+        image_list=ai_image_inputs,
+        model_name=model_name
+    )
+    if response is None:
+        raise RuntimeError(f"{model_name} 응답이 없습니다 (API 오류 — 콘솔 로그 확인)")
 
-        return response, used_image_urls, ai_image_inputs, clean_desc
-        
-    except Exception as e:
-        print(f"API 호출 중 오류 발생: {e}")
-        return None
+    # (1. 결과, 2. 원본 URL들, 3. 크롭 이미지들, 4. 상세설명에서 추출한 text)
+    return response, used_image_urls, ai_image_inputs, clean_desc
