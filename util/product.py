@@ -107,6 +107,7 @@ def getPrdInfoByJson(data):
         return " / ".join(summary)
 
     result['options'] = df['optionItem'].apply(parse_options)
+    result['optionItem'] = df['optionItem']  # 사이즈표 검증(option_size_labels)용 원본
 
     # 5. 상품 고시 정보 (리스트 -> 딕셔너리로 변환)
     # 예: [{'title': '소재', 'value': '면'}] -> {'소재': '면'}

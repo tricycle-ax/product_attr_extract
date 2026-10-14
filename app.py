@@ -3,6 +3,9 @@ import json
 from prompts.product import DEFAULT_SYSTEM_PROMPT
 from util.product import getProductInfo, analyze_product_with_full_context
 from util.search import getPrdListByKeyword, process_es_hit_to_display
+from util.size_table import extract_size_table, option_size_labels, validate
+
+SIZE_MODEL = "gpt-4.1-mini"  # 사이즈표는 OpenAI 고정 (Gemini 키 무효 상태)
 
 
 
@@ -60,20 +63,20 @@ def main():
             "사용할 AI 모델",
             # ★ 여기에 gemini-1.5-flash 추가
             options=[
+                    "aws-nova-lite-v1",
                     "gemini-2.5-flash-lite",
                     "gemini-2.5-flash",
                     # "qwen-vl-plus",
-                    "aws-nova-lite-v1",
                     # "qwen3-vl-plus",
                     "gpt-4o-mini", 
                     "gpt-4o"
                 ],
             index=0,
             captions=[
+                    "Aws Nova",
                     "Google 초고속/초저비용",
                     "Google 초고속/저비용",
                     # "Qwen 경량/저비용", 
-                    "Aws Nova",
                     # "Qwen3 고성능/저비용", 
                     "OpenAI 경량/저비용", 
                     "OpenAI 고성능/고비용"
@@ -379,6 +382,48 @@ def main():
             
             
         
+        # ---------------------------------------------------------
+        # [사이즈표] 상세설명 HTML 표 → 이미지 순으로 추출
+        # ---------------------------------------------------------
+        st.divider()
+        st.markdown("#### 📏 사이즈표")
+        prd_no = row.iloc[0]['prdNo']
+        if st.button("📏 사이즈표 추출", key=f"btn_size_{prd_no}"):
+            with st.spinner(f"사이즈표 추출 중입니다 ({SIZE_MODEL})..."):
+                try:
+                    table, meta = extract_size_table(row.iloc[0]['prdDesc'], st.secrets["OPENAI_API_KEY"], SIZE_MODEL)
+                    labels = option_size_labels({"optionItem": row.iloc[0]['optionItem']})
+                    st.session_state.size_result = {"prdNo": prd_no, "table": table, "meta": meta,
+                                                    "labels": labels, "issues": validate(table, labels)}
+                except Exception as e:
+                    st.session_state.size_result = None
+                    st.error(f"❌ 사이즈표 추출 중 오류가 발생했습니다: {e}")
+
+        size_res = st.session_state.get("size_result")
+        if size_res and size_res["prdNo"] == prd_no:
+            table, meta = size_res["table"], size_res["meta"]
+            st.caption(f"출처: `{meta.get('source')}` · 종류: `{table.kind if table else None}` · "
+                       f"단위: `{table.unit if table else '-'}` · {meta.get('sec')}초 · "
+                       f"토큰 {meta.get('in_tok')}/{meta.get('out_tok')} · 옵션 라벨: {', '.join(size_res['labels']) or '없음'}")
+            if table and table.found and table.rows:
+                grid = [{"그룹": r.group, "사이즈": r.label,
+                         **{(m.std_name if m.std_name != "기타" else m.raw_name) + (" (단면)" if m.is_half else ""): m.value
+                            for m in r.measures}} for r in table.rows]
+                if not any(g["그룹"] for g in grid):
+                    for g in grid: g.pop("그룹")
+                st.dataframe(grid, hide_index=True)
+            for issue in size_res["issues"]:
+                st.warning(issue)
+            if not size_res["issues"]:
+                st.success("검증 통과")
+            slices = meta.get("slices") or []
+            shown = [slices[i][1] for i in (table.source_slices if table else []) if 0 <= i < len(slices)]
+            if shown:
+                with st.expander(f"🧩 사이즈표가 보인 이미지 조각 ({len(shown)}장)"):
+                    st.image(shown, width=300)
+            with st.expander("사이즈표 JSON"):
+                st.json(table.model_dump() if table else {})
+
         # ---------------------------------------------------------
         # [하단 레이아웃] AI 분석 리포트
         # ---------------------------------------------------------
