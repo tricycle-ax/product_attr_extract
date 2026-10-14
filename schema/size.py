@@ -13,10 +13,23 @@ class SizeMeasure(BaseModel):
     value: float = Field(description="숫자 값 (단위 변환 없이 표의 값 그대로)")
 
 
+# 환산표(kind=conversion)의 열 체계. US 남녀 구분은 group(MEN/WOMEN)으로 판단
+SizeSystem = Literal["MM", "KR", "US", "UK", "EU", "FR", "IT", "JP", "INT", "CN", "AU", "기타"]
+
+
+class SizeSystemValue(BaseModel):
+    system: SizeSystem = Field(description="열의 사이즈 체계. JP(mm)·KR(mm)·mm 길이=MM, KR 호칭(44/55, 85/90)=KR, US=US, UK=UK, "
+                                           "EU/EUR=EU, FR=FR, IT=IT, JP 호칭(5/7/9)=JP, 알파(XS/S/M)=INT")
+    raw_name: str = Field(description="표의 열 이름 그대로 (예: US, UK, JP (mm))")
+    value: str = Field(description="셀 값 그대로 (예: 5.5, 8C, 36 2/3)")
+
+
 class SizeRow(BaseModel):
     group: str = Field(description="표가 성별/기장/핏 등으로 나뉘어 있으면 그 구분 (예: 남성, 여성, 숏). 없으면 빈 문자열")
     label: str = Field(description="표에 적힌 사이즈 라벨 그대로 (예: 066, S, 95, 250)")
-    measures: List[SizeMeasure]
+    measures: List[SizeMeasure] = Field(description="실측/신체치수 값. kind=conversion 이면 빈 배열")
+    systems: List[SizeSystemValue] = Field(default_factory=list,
+                                           description="kind=conversion 일 때만: 표의 모든 열(국가/체계별 값). 아니면 빈 배열")
 
 
 class SizeTable(BaseModel):

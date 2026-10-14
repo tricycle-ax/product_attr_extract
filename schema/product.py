@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Literal
 
 # --- 1. 데이터 구조 정의 (Pydantic Schema) ---
 # description 필드의 설명을 강화했습니다.
@@ -18,9 +18,13 @@ class ProductSchema(BaseModel):
     ai_season: List[str] = Field(..., description="착용하기 좋은 계절 (봄, 여름, 가을, 겨울, 사계절 중 복수 선택 가능)")
     ai_style: List[str] = Field(..., description="스타일 키워드 (미니멀, 클래식, 캐주얼, 스트리트 등 분석된 스타일 모두 나열)")
     ai_pattern: str = Field(..., description="패턴 정보 (무지, 스트라이프, 체크, 로고, 그래픽 등)")
-    ai_fit: str = Field(..., description="핏 정보 (슬림핏, 레귤러핏, 오버핏, 루즈핏 등)")
+    # 필터용 보조속성: 값 목록 고정 (프롬프트 [상의]/[바지]/[치마] 분류와 동일)
+    ai_fit: Literal["슬림", "레귤러", "오버", "루즈"] = Field(..., description="핏. 정보가 없으면 레귤러")
     ai_size: str = Field(..., description="사이즈")
-    ai_top_length : Optional[str] = Field(..., description="상의기장")
-    ai_pants_length : Optional[str] = Field(..., description="바지기장")
-    ai_skirt_length : Optional[str] = Field(..., description="치마기장")
+    ai_top_length: Optional[Literal["숏/크롭", "레귤러", "롱"]] = Field(..., description="상의기장. 상의가 아니면 null")
+    ai_pants_length: Optional[Literal["반바지", "7부", "긴바지"]] = Field(..., description="바지기장. 바지가 아니면 null")
+    ai_skirt_length: Optional[Literal["미니", "미디", "롱"]] = Field(..., description="치마기장. 치마가 아니면 null")
+    ai_sleeve_length: Optional[Literal["민소매", "반소매", "7부", "긴소매"]] = Field(..., description="소매기장. 상의/원피스/아우터가 아니면 null")
+    ai_thickness: Optional[Literal["얇음", "보통", "두꺼움"]] = Field(..., description="두께감. 상세설명/정보고시에 명시된 경우만, 없으면 null")
+    ai_stretch: Optional[Literal["없음", "약간", "좋음"]] = Field(..., description="신축성. 상세설명/정보고시에 명시된 경우만, 없으면 null")
 

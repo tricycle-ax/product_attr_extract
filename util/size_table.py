@@ -10,7 +10,7 @@ from google import genai
 from google.genai import types
 from openai import OpenAI
 from typing import get_args
-from schema.size import SizeTable, SizeRow, SizeMeasure, StdPart
+from schema.size import SizeTable, SizeRow, SizeMeasure, SizeSystemValue, StdPart
 
 SLICE_W = 768          # Gemini 타일 크기. 768x768 조각 1장 ≈ 258 토큰
 OVERLAP = 0.2          # 조각 경계에 걸친 표가 잘리지 않도록 겹침
@@ -41,6 +41,8 @@ RULES = """
 5. 숫자는 보이는 값 그대로 옮겨라. 보이지 않거나 '-' 인 값은 넣지 마라. 추측 금지.
 6. std_name 매핑: 화장(목뒤~소매끝)=화장, 소매길이(어깨~소매끝)=소매길이, 브라 밑가슴/밑둘레=기타. 애매하면 기타.
 7. 사이즈표가 없으면 found=false, kind=none, rows=[].
+8. kind=conversion(국가별 환산표)이면 값을 measures 가 아니라 systems 에 넣어라. 표의 모든 열(JP/KR mm, US, UK, EU, FR 등)을
+   빠짐없이 넣고, label 은 mm 열이 있으면 mm 값으로 한다. 남성/여성 등 표가 나뉘어 있으면 모두 넣고 group 으로 구분하라.
 """
 
 
@@ -120,7 +122,28 @@ def _llm(parts, api_key, model_name):
     """parts: str(텍스트) / bytes(JPEG) 리스트 → (SizeTable 후처리본|None, in_tok, out_tok)"""
     call = _call_gemini if "gemini" in model_name.lower() else _call_openai
     table, in_tok, out_tok = call(parts, api_key, model_name)
-    return (apply_half_rule(fix_transposed(table)) if table else None), in_tok, out_tok
+    return (clean_conversion(apply_half_rule(fix_transposed(table))) if table else None), in_tok, out_tok
+
+
+def clean_conversion(table):
+    """환산표는 systems 만 사용: 모델이 mm 등을 measures(총장 등)에 중복으로 넣는 것 제거"""
+    if table.kind == "conversion":
+        for r in table.rows:
+            r.measures = []
+            for v in r.systems:
+                if re.search(r"\bmm\b", v.raw_name, re.I):   # 'JP (mm)', 'KR(mm)' 은 길이값 → MM
+                    v.system = "MM"
+    return table
+
+
+GENDER_GROUP = {"women": re.compile(r"WOMEN|WOMAN|여성|여자|레이디", re.I),
+                "men": re.compile(r"(?<!WO)MEN\b|(?<!WO)MAN\b|남성|남자", re.I)}
+
+
+def gender_first(rows, gender):
+    """상품 성별과 맞는 group 행을 앞으로 (남녀 표가 나뉜 환산표용). 성별 미상이면 그대로"""
+    pat = GENDER_GROUP.get(gender)
+    return sorted(rows, key=lambda r: 0 if pat and pat.search(r.group or "") else 1) if pat else rows
 
 
 def extract_size_table(html, api_key, model_name="gpt-4.1-mini"):
@@ -244,6 +267,25 @@ def option_size_labels(product):
     return labels
 
 
+UNIT_TO_CM = {"cm": 1, "mm": 0.1, "inch": 2.54, "in": 2.54}
+
+
+def measure_attrs(table):
+    """실측표 → 범위 필터용 값 [{group, label, 표준부위: cm}]. 둘레 계열 단면은 ×2(둘레 기준), mm/inch → cm.
+    '기타' 부위는 제외, 같은 부위가 여럿이면 첫 값"""
+    if not table or table.kind != "measurement":
+        return []
+    f = UNIT_TO_CM.get((table.unit or "cm").strip().lower(), 1)
+    out = []
+    for r in table.rows:
+        d = {"group": r.group, "label": r.label}
+        for m in r.measures:
+            if m.std_name != "기타":
+                d.setdefault(m.std_name, round(m.value * f * (2 if m.is_half and m.std_name in GIRTH_PARTS else 1), 1))
+        out.append(d)
+    return out
+
+
 def validate(table, option_labels):
     """규칙 검증. 문제 목록(빈 리스트면 통과)"""
     if not table or not table.found or not table.rows:
@@ -304,6 +346,19 @@ if __name__ == "__main__":
            "<tr><td>91.4</td><td>96.4</td></tr></table>")
     assert "085(085 (90)) | 090(090 (95))\n116.8 | 117.4" in html_size_text(_lf)
     assert html_size_text("<p>사이즈 교환 문의 2024년</p>") is None
+    _ma = measure_attrs(SizeTable(found=True, kind="measurement", unit="CM", half_note=True, source_slices=[], rows=[
+        SizeRow(group="", label="S", measures=[SizeMeasure(raw_name="가슴단면", std_name="가슴둘레", is_half=True, value=50),
+                                              SizeMeasure(raw_name="총장", std_name="총장", is_half=True, value=68),
+                                              SizeMeasure(raw_name="밑가슴", std_name="기타", is_half=False, value=70)])]))
+    assert _ma == [{"group": "", "label": "S", "가슴둘레": 100, "총장": 68}], _ma
+    assert measure_attrs(_ht.model_copy(update={"kind": "body"})) == []
+    _cv = clean_conversion(SizeTable(found=True, kind="conversion", unit="mm", half_note=False, source_slices=[], rows=[
+        SizeRow(group=g, label="230", measures=[_m(230)], systems=[SizeSystemValue(system="US", raw_name="US", value="5"),
+                                                                  SizeSystemValue(system="JP", raw_name="JP (mm)", value="230")])
+        for g in ("MEN / UNI (남성 / 유니)", "WOMEN (여성)")]))
+    assert _cv.rows[0].measures == [] and _cv.rows[0].systems[0].value == "5" and _cv.rows[0].systems[1].system == "MM"
+    assert gender_first(_cv.rows, "women")[0].group == "WOMEN (여성)"
+    assert gender_first(_cv.rows, "men")[0].group.startswith("MEN")
 
     # 사용법: python -m util.size_table <out_dir> <prdNo...>
     out_dir = pathlib.Path(sys.argv[1]); out_dir.mkdir(parents=True, exist_ok=True)

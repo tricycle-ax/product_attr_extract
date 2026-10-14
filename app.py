@@ -3,7 +3,8 @@ import json
 from prompts.product import DEFAULT_SYSTEM_PROMPT
 from util.product import getProductInfo, analyze_product_with_full_context
 from util.search import getPrdListByKeyword, process_es_hit_to_display
-from util.size_table import extract_size_table, option_size_labels, validate
+from util.size_table import extract_size_table, option_size_labels, validate, measure_attrs, norm_label, label_keys, gender_first
+from util.size_label import normalize_options, size_option_values, size_group, parse_size_label
 
 SIZE_MODEL = "gpt-4.1-mini"  # 사이즈표는 OpenAI 고정 (Gemini 키 무효 상태)
 
@@ -323,6 +324,28 @@ def main():
             st.markdown(f"**브랜드:** {row.iloc[0]['brandNm']}")
             opt_txt = row.iloc[0]['options'] if row.iloc[0]['options'] != "옵션 정보 없음" else "정보 없음 (ES 데이터)"
             st.markdown(f"**옵션:** {opt_txt}")
+
+            # 옵션 사이즈 라벨 정규화 (규칙 기반, LLM 미사용)
+            p0 = row.iloc[0]
+            norm = normalize_options(size_option_values(p0['optionItem']),
+                                     [p0.get('category_L'), p0.get('category_M'), p0.get('category_S')], p0['prdNm'])
+            # 이 상품의 환산표를 추출했으면 그 값(성별 맞는 그룹 우선)으로 병기·국가 채움 — 공통 조견표보다 우선
+            sr = st.session_state.get("size_result")
+            if norm and sr and str(sr["prdNo"]) == str(p0['prdNo']) and sr["table"] and sr["table"].kind == "conversion":
+                conv = gender_first(sr["table"].rows, norm[0]["gender"])
+                for n in norm:
+                    hit = next((r for r in conv if norm_label(n["raw"].split("/")[-1]) in label_keys(r.label)), None)
+                    if hit:
+                        n["systems"] = {**{(s.system if s.system != "기타" else s.raw_name): s.value for s in hit.systems}, **n["systems"]}
+            if norm:
+                with st.expander(f"📐 옵션 사이즈 정규화 — 규칙 기반, LLM 미사용 ({norm[0]['group']} · {norm[0]['gender']})", expanded=True):
+                    tbl = [{"원본": n["raw"], "표기": n["display"], "기준값": n["value"], "종류": n["kind"],
+                            "병기·국가": ", ".join(f"{k} {v}" for k, v in n["systems"].items()) or None,
+                            "기장": n["length_variant"], "발볼": n["width"],
+                            "연령": f"{n['age_range'][0]}~{n['age_range'][1]}세" if n["age_range"] else None}
+                           for n in sorted(norm, key=lambda n: (n["value"] is None, n["value"] or 0))]
+                    empty = [k for k in tbl[0] if all(t[k] is None for t in tbl)]   # 전부 빈 열은 숨김
+                    st.dataframe([{k: v for k, v in t.items() if k not in empty} for t in tbl], hide_index=True)
             
             # 2. 디버그 정보 (접이식)
             st.write("") 
@@ -411,6 +434,8 @@ def main():
                 except Exception as e:
                     st.session_state.size_result = None
                     st.error(f"❌ 사이즈표 추출 중 오류가 발생했습니다: {e}")
+            if st.session_state.get("size_result"):
+                st.rerun()   # 위쪽 '정규화 사이즈'에 환산값을 반영하려고 한 번 다시 그림 (재추출 없음)
 
         size_res = st.session_state.get("size_result")
         if size_res and size_res["prdNo"] == prd_no:
@@ -419,12 +444,33 @@ def main():
                        f"단위: `{table.unit if table else '-'}` · {meta.get('sec')}초 · "
                        f"토큰 {meta.get('in_tok')}/{meta.get('out_tok')} · 옵션 라벨: {', '.join(size_res['labels']) or '없음'}")
             if table and table.found and table.rows:
-                grid = [{"그룹": r.group, "사이즈": r.label,
-                         **{(m.std_name if m.std_name != "기타" else m.raw_name) + (" (단면)" if m.is_half else ""): m.value
-                            for m in r.measures}} for r in table.rows]
+                p0 = row.iloc[0]
+                group, gender = size_group([p0.get('category_L'), p0.get('category_M'), p0.get('category_S')], p0['prdNm'])
+                opts = normalize_options(size_option_values(p0['optionItem']),
+                                         [p0.get('category_L'), p0.get('category_M'), p0.get('category_S')], p0['prdNm'])
+                sold = lambda lb: "✓" if any(norm_label(o["raw"].split("/")[-1]) in label_keys(lb) for o in opts) else ""
+                if table.kind == "conversion":   # 국가별 환산표: 체계별 열, 상품 성별 그룹 먼저
+                    grid = [{"그룹": r.group, "사이즈": r.label, "판매 옵션": sold(r.label),
+                             **{(s.system if s.system != "기타" else s.raw_name): s.value for s in r.systems}} for r in gender_first(table.rows, gender)]
+                else:
+                    grid = [{"그룹": r.group, "사이즈": r.label,
+                             **{(m.std_name if m.std_name != "기타" else m.raw_name) + (" (단면)" if m.is_half else ""): m.value
+                                for m in r.measures}} for r in table.rows]
                 if not any(g["그룹"] for g in grid):
                     for g in grid: g.pop("그룹")
                 st.dataframe(grid, hide_index=True)
+                # 필터용 실측값: 둘레 기준 cm + 정규화된 옵션 사이즈 연결
+                attrs = measure_attrs(table)
+                if attrs:
+                    rows_out = []
+                    for a in attrs:
+                        n = parse_size_label(a["label"], group, gender)   # 표 라벨도 같은 규칙으로 정규화
+                        rows_out.append({**({"그룹": a["group"]} if a["group"] else {}), "사이즈": a["label"],
+                                         "정규화": n["display"] if n["kind"] != "unknown" else None,
+                                         "판매 옵션": sold(a["label"]),
+                                         **{k: v for k, v in a.items() if k not in ("group", "label")}})
+                    with st.expander("🔎 필터용 실측값 (cm, 둘레 기준 — 단면은 ×2)"):
+                        st.dataframe(rows_out, hide_index=True)
             for issue in size_res["issues"]:
                 st.warning(issue)
             if not size_res["issues"]:
@@ -476,16 +522,19 @@ def main():
                             st.write(f"**카테고리:**\n{getattr(res, 'ai_category_L', '')} > {getattr(res, 'ai_category_M', '')} > {getattr(res, 'ai_category_S', '')}")
                         st.write(f"**성별:**\n{res.ai_gender}")
                         st.write(f"**상의기장:**\n{res.ai_top_length}")
+                        st.write(f"**소매기장:**\n{res.ai_sleeve_length}")
                     
                     with col_b:
                         st.write(f"**계절:**\n{', '.join(res.ai_season)}")
                         st.write(f"**스타일:**\n{', '.join(res.ai_style)}")
                         st.write(f"**바지기장:**\n{res.ai_pants_length}")
+                        st.write(f"**두께감:**\n{res.ai_thickness}")
                     
                     with col_c:
                         st.write(f"**핏:**\n{res.ai_fit}")
                         st.write(f"**패턴:**\n{res.ai_pattern}")
                         st.write(f"**치마기장:**\n{res.ai_skirt_length}")
+                        st.write(f"**신축성:**\n{res.ai_stretch}")
                 except:
                     st.error("결과 표시 중 오류가 발생했습니다.")
             

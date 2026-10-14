@@ -2,6 +2,7 @@ import requests
 import pandas as pd
 import json
 import ast
+import re
 from util.image import encode_image_to_base64_chunk, extract_all_valid_images
 from bs4 import BeautifulSoup
 from requests.exceptions import HTTPError
@@ -258,5 +259,46 @@ def analyze_product_with_full_context(html_content, model_name="gemini-2.5-flash
     if response is None:
         raise RuntimeError(f"{model_name} 응답이 없습니다 (API 오류 — 콘솔 로그 확인)")
 
+    fix_feel_attrs(response, html_desc, json.dumps(row.get('notices') or {}, ensure_ascii=False))
+
     # (1. 결과, 2. 원본 URL들, 3. 크롭 이미지들, 4. 상세설명에서 추출한 text)
     return response, used_image_urls, ai_image_inputs, clean_desc
+
+
+FEEL_MAP = {"ai_thickness": ("두께", [("얇", "얇음"), ("두꺼", "두꺼움"), ("적당|보통", "보통")]),
+            "ai_stretch": ("신축", [("없", "없음"), ("약간", "약간"), ("좋|있", "좋음")])}
+
+
+def checked_feel(html):
+    """상세 HTML 의 체크표(두께감/신축성)에서 선택된 칸 텍스트. {'두께': '적당한 편', ...}
+    shortcut: LF 마크업(ico_check.gif 배경)만 인식, 다른 몰의 체크 표기(class=on, ●)가 보이면 여기 추가"""
+    out = {}
+    for th in BeautifulSoup(html or "", "html.parser").find_all("th"):
+        key = next((k for k, _ in FEEL_MAP.values() if k in th.get_text()), None)
+        td = key and th.find_parent("tr").find(lambda t: t.name == "td" and "ico_check" in (t.get("style") or ""))
+        if td:
+            out[key] = td.get_text(strip=True)
+    return out
+
+
+def fix_feel_attrs(res, html, notices_text=""):
+    """두께감/신축성: 체크표가 있으면 그 값, 원문에 언급이 없으면 null (LLM 추측 제거)"""
+    text = BeautifulSoup(html or "", "html.parser").get_text(" ") + notices_text
+    sel = checked_feel(html)
+    for field, (key, rules) in FEEL_MAP.items():
+        if key in sel:
+            setattr(res, field, next((v for pat, v in rules if re.search(pat, sel[key])), getattr(res, field)))
+        elif key not in text:
+            setattr(res, field, None)
+
+if __name__ == "__main__":
+    # self-check: python -m util.product
+    from types import SimpleNamespace as N
+    _h = ("<table><tr><th>두께감</th><td style=\"background:url(ico_nocheck.gif)\">얇아요</td>"
+          "<td style=\"background:url(ico_check.gif)\">적당한 편</td></tr>"
+          "<tr><th>신축성</th><td style=\"background:url(ico_check.gif)\">신축성이 없어요</td></tr></table>")
+    _r = N(ai_thickness="두꺼움", ai_stretch="좋음"); fix_feel_attrs(_r, _h)
+    assert (_r.ai_thickness, _r.ai_stretch) == ("보통", "없음"), _r
+    _r = N(ai_thickness="보통", ai_stretch="약간"); fix_feel_attrs(_r, "<p>울 100%</p>")
+    assert (_r.ai_thickness, _r.ai_stretch) == (None, None), _r
+    print("SELFTEST_OK")
