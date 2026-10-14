@@ -20,7 +20,8 @@ def _call_openai_native(system_prompt, user_text, image_list, model_name, client
             model=model_name, 
             messages=messages,
             response_format=ProductSchema, # 사용자가 정의한 Pydantic 모델
-            temperature=0.2
+            # gpt-5/6 계열(추론 모델)은 temperature 고정값만 허용 → gpt-4 계열에만 지정
+            **({"temperature": 0.2} if model_name.startswith(("gpt-4", "gpt-3")) else {})
         )
         
         product_data = response.choices[0].message.parsed

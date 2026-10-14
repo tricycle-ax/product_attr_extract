@@ -5,6 +5,17 @@ from ai import gpt, gemini, qwen, nova_lite
 from schema.product import ProductSchema
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def gateway_models():
+    """LiteLLM 게이트웨이 키로 호출 가능한 모델 목록 (10분 캐시, 조회 실패 시 빈 목록)"""
+    try:
+        gw = OpenAI(base_url=st.secrets["AI_GATEWAY_URL"], api_key=st.secrets["AI_GATEWAY_KEY"])
+        return sorted(m.id for m in gw.models.list())
+    except Exception as e:
+        print(f"게이트웨이 모델 조회 실패: {e}")
+        return []
+
+
 def _to_product_schema(res):
     """Nova 는 dict 또는 (코드펜스 포함) 문자열을 돌려줌 → 다른 모델과 같은 ProductSchema 로 통일"""
     if res is None or isinstance(res, ProductSchema):
@@ -21,6 +32,11 @@ def call_ai_service(system_prompt, user_text, image_list, model_name):
     모델 이름에 따라 적절한 AI 서비스를 호출하고, 결과를 ProductSchema 형태로 반환합니다.
     """
     
+    # 0. 게이트웨이에 등록된 모델이면 이름과 무관하게 게이트웨이로 (예: 게이트웨이의 gemini/* 별칭)
+    if model_name in gateway_models():
+        client = OpenAI(base_url=st.secrets["AI_GATEWAY_URL"], api_key=st.secrets["AI_GATEWAY_KEY"])
+        return gpt._call_openai_native(system_prompt, user_text, image_list, model_name, client)
+
     # 1. Google Gemini (Flash, Pro 등)
     if "gemini" in model_name.lower():
         api_key = st.secrets["GOOGLE_API_KEY_LSS"]
@@ -39,11 +55,9 @@ def call_ai_service(system_prompt, user_text, image_list, model_name):
         schema = json.dumps(ProductSchema.model_json_schema(), ensure_ascii=False)
         return _to_product_schema(nova_lite._call_nova_lite_api(system_prompt, user_text, image_list, model_name, token, schema))
     
-    # 3. 기본 OpenAI (GPT-4o 등)
+    # 3. 기본 OpenAI — 사내 LiteLLM 게이트웨이 경유 (company 팀 키, 허용 모델은 게이트웨이 키 설정을 따름)
     else:
-        # ★ [수정] Client가 없으면 api_key로 생성하는 로직 추가
-        api_key = st.secrets["OPENAI_API_KEY"]
-        client = OpenAI(api_key=api_key)
+        client = OpenAI(base_url=st.secrets["AI_GATEWAY_URL"], api_key=st.secrets["AI_GATEWAY_KEY"])
         return gpt._call_openai_native(system_prompt, user_text, image_list, model_name, client)
 
 

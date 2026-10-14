@@ -2,11 +2,13 @@ import streamlit as st
 import json
 from prompts.product import DEFAULT_SYSTEM_PROMPT
 from util.product import getProductInfo, analyze_product_with_full_context
+from ai.model import gateway_models
 from util.search import getPrdListByKeyword, process_es_hit_to_display
-from util.size_table import extract_size_table, option_size_labels, validate, measure_attrs, norm_label, label_keys, gender_first
+from util.size_table import extract_size_table, option_size_labels, validate, measure_attrs, match_row, gender_first
 from util.size_label import normalize_options, size_option_values, size_group, parse_size_label
 
-SIZE_MODEL = "gpt-4.1-mini"  # 사이즈표는 OpenAI 고정 (Gemini 키 무효 상태)
+# 사이즈표 모델: LiteLLM 게이트웨이 경유. secrets 의 SIZE_MODEL 로 교체 (게이트웨이 키 허용 모델이어야 함)
+SIZE_MODEL = st.secrets.get("SIZE_MODEL", "gpt-6-luna")
 
 
 
@@ -59,31 +61,17 @@ def main():
     with st.sidebar:
         st.header("🛠️ 설정")
         st.markdown("---")
-        # 라디오 버튼으로 모델 선택
+        # 게이트웨이 키로 사용 가능한 모델만 선택지로 (Nova·Gemini 직접 호출은 이 환경에서 불가: VPC 전용/키 무효)
+        models = gateway_models() or ["gpt-4o-mini"]
+        if not gateway_models():
+            st.warning("게이트웨이 모델 목록을 가져오지 못해 기본 모델만 표시합니다.")
         selected_sidebar_model = st.radio(
-            "사용할 AI 모델",
-            # ★ 여기에 gemini-1.5-flash 추가
-            options=[
-                    "aws-nova-lite-v1",
-                    "gemini-2.5-flash-lite",
-                    "gemini-2.5-flash",
-                    # "qwen-vl-plus",
-                    # "qwen3-vl-plus",
-                    "gpt-4o-mini", 
-                    "gpt-4o"
-                ],
-            index=0,
-            captions=[
-                    "Aws Nova",
-                    "Google 초고속/초저비용",
-                    "Google 초고속/저비용",
-                    # "Qwen 경량/저비용", 
-                    # "Qwen3 고성능/저비용", 
-                    "OpenAI 경량/저비용", 
-                    "OpenAI 고성능/고비용"
-                ]
-        )
-        st.info(f"선택된 모델: **{selected_sidebar_model}**")
+            "상품 분석 모델", models, index=models.index("gpt-4o-mini") if "gpt-4o-mini" in models else 0,
+            help="LiteLLM 게이트웨이(company 팀 키)에서 허용된 모델")
+        size_model = st.selectbox(
+            "사이즈표 모델", models, index=models.index(SIZE_MODEL) if SIZE_MODEL in models else 0,
+            help="상세 HTML/이미지에서 사이즈표를 추출할 때 사용")
+        st.info(f"분석: **{selected_sidebar_model}** · 사이즈표: **{size_model}**")
 
         st.markdown("---")
         # ★ [추가] 이미지 분석 포함 여부 토글
@@ -334,7 +322,7 @@ def main():
             if norm and sr and str(sr["prdNo"]) == str(p0['prdNo']) and sr["table"] and sr["table"].kind == "conversion":
                 conv = gender_first(sr["table"].rows, norm[0]["gender"])
                 for n in norm:
-                    hit = next((r for r in conv if norm_label(n["raw"].split("/")[-1]) in label_keys(r.label)), None)
+                    hit = match_row(n["raw"], conv)
                     if hit:
                         n["systems"] = {**{(s.system if s.system != "기타" else s.raw_name): s.value for s in hit.systems}, **n["systems"]}
             if norm:
@@ -425,9 +413,10 @@ def main():
         prd_no = row.iloc[0]['prdNo']
         # 카드의 "📏 사이즈표" 버튼으로 들어온 경우 자동 실행
         if st.button("📏 사이즈표 추출", key=f"btn_size_{prd_no}") or str(st.session_state.pop("size_request", None)) == str(prd_no):
-            with st.spinner(f"사이즈표 추출 중입니다 ({SIZE_MODEL})..."):
+            with st.spinner(f"사이즈표 추출 중입니다 ({size_model})..."):
                 try:
-                    table, meta = extract_size_table(row.iloc[0]['prdDesc'], st.secrets["OPENAI_API_KEY"], SIZE_MODEL)
+                    table, meta = extract_size_table(row.iloc[0]['prdDesc'], st.secrets["AI_GATEWAY_KEY"], size_model,
+                                                     base_url=st.secrets["AI_GATEWAY_URL"])
                     labels = option_size_labels({"optionItem": row.iloc[0]['optionItem']})
                     st.session_state.size_result = {"prdNo": prd_no, "table": table, "meta": meta,
                                                     "labels": labels, "issues": validate(table, labels)}
@@ -448,9 +437,11 @@ def main():
                 group, gender = size_group([p0.get('category_L'), p0.get('category_M'), p0.get('category_S')], p0['prdNm'])
                 opts = normalize_options(size_option_values(p0['optionItem']),
                                          [p0.get('category_L'), p0.get('category_M'), p0.get('category_S')], p0['prdNm'])
-                sold = lambda lb: "✓" if any(norm_label(o["raw"].split("/")[-1]) in label_keys(lb) for o in opts) else ""
+                # 옵션별로 가장 맞는 행 하나만 판매 표시 (남녀 표가 나뉜 환산표는 상품 성별 그룹 우선)
+                sold_rows = {id(match_row(o["raw"], gender_first(table.rows, gender))) for o in opts}
+                sold = lambda r: "✓" if id(r) in sold_rows else ""
                 if table.kind == "conversion":   # 국가별 환산표: 체계별 열, 상품 성별 그룹 먼저
-                    grid = [{"그룹": r.group, "사이즈": r.label, "판매 옵션": sold(r.label),
+                    grid = [{"그룹": r.group, "사이즈": r.label, "판매 옵션": sold(r),
                              **{(s.system if s.system != "기타" else s.raw_name): s.value for s in r.systems}} for r in gender_first(table.rows, gender)]
                 else:
                     grid = [{"그룹": r.group, "사이즈": r.label,
@@ -463,11 +454,11 @@ def main():
                 attrs = measure_attrs(table)
                 if attrs:
                     rows_out = []
-                    for a in attrs:
+                    for a, r in zip(attrs, table.rows):   # measure_attrs 는 table.rows 순서 그대로
                         n = parse_size_label(a["label"], group, gender)   # 표 라벨도 같은 규칙으로 정규화
                         rows_out.append({**({"그룹": a["group"]} if a["group"] else {}), "사이즈": a["label"],
                                          "정규화": n["display"] if n["kind"] != "unknown" else None,
-                                         "판매 옵션": sold(a["label"]),
+                                         "판매 옵션": sold(r),
                                          **{k: v for k, v in a.items() if k not in ("group", "label")}})
                     with st.expander("🔎 필터용 실측값 (cm, 둘레 기준 — 단면은 ×2)"):
                         st.dataframe(rows_out, hide_index=True)

@@ -118,10 +118,12 @@ def html_size_text(html):
     return "\n...\n".join(segs)[:HTML_MAX_CHARS] or None
 
 
-def _llm(parts, api_key, model_name):
+def _llm(parts, api_key, model_name, base_url=None):
     """parts: str(텍스트) / bytes(JPEG) 리스트 → (SizeTable 후처리본|None, in_tok, out_tok)"""
-    call = _call_gemini if "gemini" in model_name.lower() else _call_openai
-    table, in_tok, out_tok = call(parts, api_key, model_name)
+    if "gemini" in model_name.lower():
+        table, in_tok, out_tok = _call_gemini(parts, api_key, model_name)
+    else:
+        table, in_tok, out_tok = _call_openai(parts, api_key, model_name, base_url)
     return (clean_conversion(apply_half_rule(fix_transposed(table))) if table else None), in_tok, out_tok
 
 
@@ -146,7 +148,7 @@ def gender_first(rows, gender):
     return sorted(rows, key=lambda r: 0 if pat and pat.search(r.group or "") else 1) if pat else rows
 
 
-def extract_size_table(html, api_key, model_name="gpt-4.1-mini"):
+def extract_size_table(html, api_key, model_name="gpt-6-luna", base_url=None):
     """상세 HTML 에서 사이즈표 추출: HTML 텍스트 표 → (실측표 못 얻으면) 이미지.
     return (SizeTable|None, meta dict). meta['source'] = 'html' | 'image' | None"""
     t0 = time.time()
@@ -155,7 +157,7 @@ def extract_size_table(html, api_key, model_name="gpt-4.1-mini"):
 
     text = html_size_text(html)
     if text:
-        html_table, i, o = _llm([HTML_INTRO + RULES, text], api_key, model_name)
+        html_table, i, o = _llm([HTML_INTRO + RULES, text], api_key, model_name, base_url)
         meta.update(html_chars=len(text), html_text=text, in_tok=i, out_tok=o)
         if html_table and html_table.kind == "measurement":
             meta.update(source="html", sec=round(time.time() - t0, 1))
@@ -168,7 +170,7 @@ def extract_size_table(html, api_key, model_name="gpt-4.1-mini"):
         parts = [IMAGE_INTRO + RULES]
         for i, (_, b) in enumerate(slices):
             parts += [f"[조각 {i}]", b]
-        table, i, o = _llm(parts, api_key, model_name)
+        table, i, o = _llm(parts, api_key, model_name, base_url)
         meta.update(in_tok=meta["in_tok"] + i, out_tok=meta["out_tok"] + o)
     found = lambda t: t is not None and t.found and t.kind != "none"
     if found(table):
@@ -195,15 +197,17 @@ def _call_gemini(parts, api_key, model_name):
     return resp.parsed, u.prompt_token_count, u.candidates_token_count
 
 
-def _call_openai(parts, api_key, model_name):
+def _call_openai(parts, api_key, model_name, base_url=None):
+    """base_url: LiteLLM 게이트웨이 주소 (None 이면 OpenAI 직접)"""
     content = [{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(p).decode(),
                                                    "detail": "high"}}
                if isinstance(p, bytes) else {"type": "text", "text": p} for p in parts]
-    resp = OpenAI(api_key=api_key).beta.chat.completions.parse(
+    resp = OpenAI(api_key=api_key, base_url=base_url).beta.chat.completions.parse(
         model=model_name,
         messages=[{"role": "user", "content": content}],
         response_format=SizeTable,
-        temperature=0,
+        # gpt-5/6 계열(추론 모델)은 temperature 고정값만 허용 → gpt-4 계열에만 0 지정
+        **({"temperature": 0} if model_name.startswith(("gpt-4", "gpt-3")) else {}),
     )
     return resp.choices[0].message.parsed, resp.usage.prompt_tokens, resp.usage.completion_tokens
 
@@ -217,6 +221,13 @@ def norm_label(s):
 def label_keys(s):
     """표 라벨의 매칭 후보: 'M (OME)' → {'M', 'OME'}"""
     return {norm_label(s)} | {norm_label(x) for x in re.findall(r"\(([^()]+)\)", str(s))}
+
+
+def match_row(label, rows):
+    """옵션 라벨에 해당하는 표 행. 본 라벨이 같은 행 우선, 없으면 괄호 병기값으로.
+    ('085(085 (90))' 의 (90) 때문에 옵션 090 이 085 행에 잘못 붙는 것 방지)"""
+    k = norm_label(str(label).split("/")[-1])
+    return next((r for r in rows if norm_label(r.label) == k), None) or next((r for r in rows if k in label_keys(r.label)), None)
 
 
 GIRTH_PARTS = {"가슴둘레", "허리둘레", "엉덩이둘레", "허벅지둘레", "밑단둘레", "소매통", "발볼"}
@@ -325,6 +336,9 @@ if __name__ == "__main__":
     assert any("단조증가" in i for i in validate(_t, ["66", "69"]))
     assert any("미매칭" in i for i in validate(_t, ["66", "72"]))
     assert label_keys("M (OME)") == {"M", "OME"}
+    _lf_rows = [SizeRow(group="", label="085(085 (90))", measures=[]), SizeRow(group="", label="090(090 (95))", measures=[])]
+    assert match_row("Navy/090", _lf_rows).label.startswith("090") and match_row("085", _lf_rows).label.startswith("085")
+    assert match_row("OME", [SizeRow(group="", label="M (OME)", measures=[])]).label == "M (OME)"
     _w = lambda n, v: SizeMeasure(raw_name=n, std_name="허리둘레", is_half=False, value=v)
     _tt = fix_transposed(_t.model_copy(update={"rows": [
         SizeRow(group="", label="사이즈스펙", measures=[_w("066", 1), _w("069", 2)]),
@@ -362,16 +376,22 @@ if __name__ == "__main__":
 
     # 사용법: python -m util.size_table <out_dir> <prdNo...>
     out_dir = pathlib.Path(sys.argv[1]); out_dir.mkdir(parents=True, exist_ok=True)
-    model = os.environ.get("SIZE_MODEL", "gpt-4.1-mini")
+    model = os.environ.get("SIZE_MODEL", "gpt-6-luna")
     secrets = tomllib.load(open(".streamlit/secrets.toml", "rb"))
-    key = secrets["GOOGLE_API_KEY_LSS" if "gemini" in model else "OPENAI_API_KEY"]
+    # 기본은 게이트웨이 경유. SIZE_DIRECT=1 이면 OpenAI 직접(게이트웨이 미허용 모델 평가용)
+    direct = os.environ.get("SIZE_DIRECT") == "1" or "gemini" in model
+    key = secrets["GOOGLE_API_KEY_LSS" if "gemini" in model else "OPENAI_API_KEY" if direct else "AI_GATEWAY_KEY"]
+    base_url = None if direct else secrets["AI_GATEWAY_URL"]
     for prd_no in sys.argv[2:]:
         d = requests.get(f"https://hapix.halfclub.com/product/products/withoutPrice/{prd_no}",
                          params=dict(countryCd="001", langCd="001", siteCd="1", deviceCd="001", mandM="halfclub"),
                          timeout=10).json()["data"]
+        if not d:   # 판매종료 등으로 상품 데이터 없음
+            print(json.dumps({"prdNo": prd_no, "error": "상품 데이터 없음"}, ensure_ascii=False))
+            continue
         html = (d.get("productDesc") or {}).get("prdDescContClob")
         try:
-            table, meta = extract_size_table(html, key, model)
+            table, meta = extract_size_table(html, key, model, base_url)
         except Exception as e:
             table, meta = None, {"error": str(e)}
         labels = option_size_labels(d)

@@ -87,7 +87,8 @@ def _parse_seg(s, group, gender):
     if m := re.match(r"^(숏|기본|롱)\s*(.+)$", s):
         length, s = LENGTH_WORDS[m.group(1)], m.group(2).strip()
     r = {"shoes": _shoes, "kids_shoes": _shoes, "kids": _kids, "bra": _bra, "suit": _suit,
-         "bottom": _bottom, "acc": _acc}.get(group, _top)(s, gender)
+         "bottom": _bottom, "acc": _acc}.get(group, _top)
+    r = r(s, gender) or (r(s.split("(")[0].strip(), gender) if "(" in s else None)   # '085(085 (90))' → 본 라벨 085
     if r and length:
         r["length_variant"] = length
     return r
@@ -269,6 +270,7 @@ def _selftest():
     assert P("티셔츠BLACK/바지BLACK/120호", "kids")["value"] == 120
     assert P(".80B", "bra")["display"] == "80B" and P("Black/75A", "bra")["cup"] == "A"
     assert P("가나다", "top")["kind"] == "unknown"
+    assert P("085(085 (90))", "top", "women")["value"] == 85
     assert size_group(["여성의류", "데님팬츠", "부츠컷"])[0] == "bottom"
     assert size_group([None, None, None], "골드 스퀘어링 구두")[0] == "shoes"
     assert P("2XL110", "top")["value"] == 110 and P("140", "top")["value"] == 140
