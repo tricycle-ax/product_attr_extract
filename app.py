@@ -63,6 +63,7 @@ def main():
                     "gemini-2.5-flash-lite",
                     "gemini-2.5-flash",
                     # "qwen-vl-plus",
+                    "aws-nova-lite-v1",
                     # "qwen3-vl-plus",
                     "gpt-4o-mini", 
                     "gpt-4o"
@@ -72,6 +73,7 @@ def main():
                     "Google 초고속/초저비용",
                     "Google 초고속/저비용",
                     # "Qwen 경량/저비용", 
+                    "Aws Nova",
                     # "Qwen3 고성능/저비용", 
                     "OpenAI 경량/저비용", 
                     "OpenAI 고성능/고비용"

@@ -1,6 +1,6 @@
 import streamlit as st
 from openai import OpenAI
-from ai import gpt, gemini, qwen
+from ai import gpt, gemini, qwen, nova_lite
 
 # ==========================================
 # [1] AI 통신 전담 함수 (핵심 변경 부분)
@@ -21,7 +21,12 @@ def call_ai_service(system_prompt, user_text, image_list, model_name):
         api_key = st.secrets["DASHSCOPE_API_KEY"]
         client = OpenAI(base_url=st.secrets["DASHSCOPE_API_URL"], api_key=api_key)
         return qwen._call_openai_compatible(system_prompt, user_text, image_list, model_name, client)
-
+    
+    # 3. aws nova lite
+    elif "aws" in model_name.lower():        
+        token = st.secrets["AWS_BEARER_TOKEN_BEDROCK"]
+        return nova_lite._call_nova_lite_api(system_prompt, user_text, image_list, model_name, token)
+    
     # 3. 기본 OpenAI (GPT-4o 등)
     else:
         # ★ [수정] Client가 없으면 api_key로 생성하는 로직 추가
